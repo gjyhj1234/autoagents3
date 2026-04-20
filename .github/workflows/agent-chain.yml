@@ -56,9 +56,29 @@ jobs:
               return;
             }
             const idx = order.indexOf(current);
+
+            // Try to discover the root issue number from PR body / linked issues
+            let rootNumber = '';
+            const body = context.payload.pull_request.body || '';
+            const refMatch = body.match(/root[^#]*#(\d+)/i);
+            if (refMatch) rootNumber = refMatch[1];
+            if (!rootNumber) {
+              const { data: roots } = await github.rest.issues.listForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                labels: 'agent-root',
+                per_page: 1,
+              });
+              if (roots.length) rootNumber = String(roots[0].number);
+            }
+            core.setOutput('rootNumber', rootNumber);
+            core.setOutput('current', current);
+
             if (idx === order.length - 1) {
               core.info('Last role finished. No next task.');
               core.setOutput('next', '');
+              core.setOutput('finished', 'true');
               return;
             }
             const next = order[idx + 1];
@@ -76,11 +96,17 @@ jobs:
           TITLE: ${{ steps.role.outputs.title }}
           INPUTS: ${{ steps.role.outputs.inputs }}
           PREV_PR: ${{ steps.role.outputs.prevPr }}
+          ROOT_NUMBER: ${{ steps.role.outputs.rootNumber }}
           REPO: ${{ github.repository }}
         run: |
           set -e
+          ROOT_REF=""
+          if [ -n "$ROOT_NUMBER" ]; then
+            ROOT_REF="关联 root：#${ROOT_NUMBER}"
+          fi
           BODY=$(cat <<EOF
           自动创建的子任务（由前置 PR #${PREV_PR} 合并后触发）。
+          ${ROOT_REF}
 
           角色：${NEXT}
           输入：${INPUTS}
@@ -98,6 +124,11 @@ jobs:
             --body "$BODY" \
             --label "agent-task,agent-sub,$NEXT,status:in-progress" \
             --assignee "Copilot"
+          if [ -n "$ROOT_NUMBER" ]; then
+            gh issue comment "$ROOT_NUMBER" \
+              --repo "$REPO" \
+              --body "✅ \`${{ steps.role.outputs.current }}\` 已合并（PR #${PREV_PR}），已自动开下一个角色 \`${NEXT}\` 的子任务。"
+          fi
 
       - name: Fallback (no PAT) - create issue without Copilot assignment
         if: steps.role.outputs.next != '' && env.AGENT_PAT == ''
@@ -117,3 +148,17 @@ jobs:
             --title "$TITLE" \
             --body "$BODY" \
             --label "agent-task,agent-sub,$NEXT,status:in-progress"
+
+      - name: Close root issue when last role finished
+        if: steps.role.outputs.finished == 'true' && steps.role.outputs.rootNumber != ''
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_PAT != '' && secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ROOT_NUMBER: ${{ steps.role.outputs.rootNumber }}
+          PREV_PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -e
+          gh issue comment "$ROOT_NUMBER" \
+            --repo "$REPO" \
+            --body "🎉 全部 6 个角色已交付（最后 PR #${PREV_PR} 已合并），自动关闭本 root 任务。"
+          gh issue close "$ROOT_NUMBER" --repo "$REPO" --reason completed
