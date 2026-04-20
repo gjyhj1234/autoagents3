@@ -1,0 +1,45 @@
+# GitHub labels managed by .github/workflows/labels-sync.yml
+# Any change here will be synced to the repository labels on push to main.
+
+- name: agent-task
+  color: "0E8A16"
+  description: 由 Copilot Coding Agent 自动执行的任务
+- name: agent-root
+  color: "1D76DB"
+  description: 总协调者根任务
+- name: agent-sub
+  color: "C5DEF5"
+  description: 拆分后的子任务
+- name: role:coordinator
+  color: "5319E7"
+  description: 总协调者 Agent
+- name: role:product
+  color: "1D76DB"
+  description: 产品设计师 Agent
+- name: role:uiux
+  color: "FBCA04"
+  description: UI/UX 设计师 Agent
+- name: role:architect
+  color: "B60205"
+  description: 架构师 Agent
+- name: role:backend
+  color: "0E8A16"
+  description: 后端开发 Agent
+- name: role:frontend
+  color: "C2E0C6"
+  description: 前端开发 Agent
+- name: role:qa
+  color: "BFD4F2"
+  description: 测试 Agent
+- name: status:blocked
+  color: "B60205"
+  description: 等待前置任务完成
+- name: status:in-progress
+  color: "FBCA04"
+  description: Agent 执行中
+- name: status:done
+  color: "0E8A16"
+  description: 已完成
+- name: automerge
+  color: "0E8A16"
+  description: PR 合并所需检查通过后自动合并

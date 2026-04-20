@@ -1,0 +1,52 @@
+name: 🤖 Agent 子任务 (Sub Task)
+description: 由总协调者创建的单角色子任务（一般不手动创建）
+title: "[SUB][role:xxx] <子任务标题>"
+labels:
+  - agent-task
+  - agent-sub
+assignees:
+  - Copilot
+body:
+  - type: input
+    id: parent
+    attributes:
+      label: 关联根任务
+      placeholder: "#1"
+    validations:
+      required: true
+  - type: dropdown
+    id: role
+    attributes:
+      label: 角色
+      options:
+        - role:product
+        - role:uiux
+        - role:architect
+        - role:backend
+        - role:frontend
+        - role:qa
+    validations:
+      required: true
+  - type: textarea
+    id: inputs
+    attributes:
+      label: 输入（前序交付物）
+      description: 列出本任务需要参考的已合并文档或代码
+    validations:
+      required: true
+  - type: textarea
+    id: outputs
+    attributes:
+      label: 输出（本任务要产出的文件/目录）
+    validations:
+      required: true
+  - type: textarea
+    id: dod
+    attributes:
+      label: 完成定义 (DoD)
+      value: |
+        - [ ] 代码/文档已提交到指定目录
+        - [ ] PR 已从 Draft 切为 Ready for review
+        - [ ] PR 带 `automerge` 标签
+        - [ ] CI 全部绿色
+        - [ ] 已自动合并并关闭本 Issue
