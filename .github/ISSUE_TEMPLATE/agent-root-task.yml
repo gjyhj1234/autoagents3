@@ -1,0 +1,84 @@
+name: 🤖 Agent 根任务 (Root Task)
+description: 创建一个根任务，由总协调者 Agent 负责拆分并驱动整个自动化开发流程
+title: "[ROOT] <模块/项目名称>"
+labels:
+  - agent-task
+  - agent-root
+  - role:coordinator
+assignees:
+  - Copilot
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > 本 Issue 将由 **GitHub Copilot Coding Agent** 自动执行。请完整填写以下字段，然后提交后 **将 Assignee 设为 `Copilot`**。
+        >
+        > Agent 会：读取本 Issue → 拆分子任务 → 按顺序创建 `role:*` 子 Issue → 依次开发 → 每个子任务自动出 PR、过 CI、auto-merge。
+  - type: input
+    id: module
+    attributes:
+      label: 模块名称
+      placeholder: 例如：患者管理模块
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: 业务目标
+      description: 用 2-5 句话描述本模块要解决什么业务问题
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 功能范围
+      description: 明确列出要实现的核心功能（列表形式）
+      value: |
+        - [ ] 患者信息新增
+        - [ ] 患者信息查询（分页、筛选）
+        - [ ] 患者信息修改
+        - [ ] 患者信息删除
+        - [ ] 患者信息详情
+    validations:
+      required: true
+  - type: textarea
+    id: deliverables
+    attributes:
+      label: 交付物目录约定
+      description: 严格遵守以下目录结构
+      value: |
+        - `docs/requirements/*.md` —— 产品需求文档（Agent: role:product）
+        - `docs/ui-design/*.md` —— UI 交互设计（Agent: role:uiux）
+        - `docs/architecture/*.md` —— 架构设计、DB Schema、接口定义（Agent: role:architect）
+        - `backend/` —— 后端代码（Agent: role:backend）
+        - `frontend/` —— 前端代码（Agent: role:frontend）
+        - `tests/` —— 自动化测试代码与报告（Agent: role:qa）
+    validations:
+      required: true
+  - type: textarea
+    id: pipeline
+    attributes:
+      label: 执行顺序（严格串行）
+      value: |
+        1. role:product   → 产品需求文档
+        2. role:uiux      → UI 设计文档
+        3. role:architect → 架构与接口设计
+        4. role:backend   → 后端实现
+        5. role:frontend  → 前端实现
+        6. role:qa        → 自动化测试
+    validations:
+      required: true
+  - type: textarea
+    id: rules
+    attributes:
+      label: 自动化规则
+      value: |
+        1. 前序子任务未合并前，后续任务必须保持 `status:blocked` 标签。
+        2. 每个子任务由 Agent 在独立分支上开发，初始以 Draft PR 提交。
+        3. 代码提交完毕后，Agent 必须把 PR 从 Draft 变为 Ready for review。
+        4. PR 必须带 `automerge` 标签，CI 通过后自动 squash-merge 并删除分支。
+        5. 合并后自动关闭对应子 Issue，并将下一个子任务从 `status:blocked` 切换为 `status:in-progress`。
+        6. CI 失败时 Agent 自动读取日志修复，同一子任务最多重试 3 次；超限则关闭该 PR 并在本根 Issue 留言说明原因。
+        7. 所有子任务合并后自动关闭本根 Issue。
+    validations:
+      required: true

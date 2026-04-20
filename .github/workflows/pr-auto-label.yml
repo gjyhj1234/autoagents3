@@ -1,0 +1,61 @@
+name: PR Auto Label
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const body = (pr.body || '') + '\n' + (pr.title || '');
+            const branch = pr.head.ref || '';
+            const text = (body + '\n' + branch).toLowerCase();
+
+            const mapping = [
+              { kw: ['docs/requirements', 'role:product', 'product'], label: 'role:product' },
+              { kw: ['docs/ui-design', 'role:uiux', 'ui/ux', 'uiux'],  label: 'role:uiux' },
+              { kw: ['docs/architecture', 'role:architect', 'architect'], label: 'role:architect' },
+              { kw: ['backend/', 'role:backend', 'backend'], label: 'role:backend' },
+              { kw: ['frontend/', 'role:frontend', 'frontend'], label: 'role:frontend' },
+              { kw: ['tests/', 'role:qa', 'qa', 'test'], label: 'role:qa' },
+            ];
+
+            const toAdd = new Set(['agent-task', 'automerge']);
+            for (const m of mapping) {
+              if (m.kw.some(k => text.includes(k))) toAdd.add(m.label);
+            }
+
+            // Also infer from changed files
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+            for (const f of files) {
+              const p = f.filename.toLowerCase();
+              if (p.startsWith('docs/requirements/')) toAdd.add('role:product');
+              else if (p.startsWith('docs/ui-design/')) toAdd.add('role:uiux');
+              else if (p.startsWith('docs/architecture/')) toAdd.add('role:architect');
+              else if (p.startsWith('backend/')) toAdd.add('role:backend');
+              else if (p.startsWith('frontend/')) toAdd.add('role:frontend');
+              else if (p.startsWith('tests/')) toAdd.add('role:qa');
+            }
+
+            const labels = Array.from(toAdd);
+            core.info('Adding labels: ' + labels.join(', '));
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels,
+            });

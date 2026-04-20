@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # 最小可用的"必需状态检查"，保证分支保护规则能找到一个稳定的 check 名
+  # 当 backend/frontend/tests 有真实代码时，在此扩展即可
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate repository layout
+        run: |
+          set -e
+          for d in docs/requirements docs/ui-design docs/architecture backend frontend tests; do
+            if [ ! -d "$d" ]; then
+              echo "::error::Missing required directory: $d"
+              exit 1
+            fi
+          done
+          echo "Repository layout OK."
+
+      - name: Validate YAML workflows
+        run: |
+          python3 - <<'PY'
+          import glob, sys, yaml
+          bad = 0
+          for f in glob.glob('.github/workflows/*.y*ml') + glob.glob('.github/*.y*ml') + glob.glob('.github/ISSUE_TEMPLATE/*.y*ml'):
+              try:
+                  with open(f, 'r', encoding='utf-8') as fh:
+                      yaml.safe_load(fh)
+                  print(f"ok  {f}")
+              except Exception as e:
+                  print(f"FAIL {f}: {e}")
+                  bad += 1
+          sys.exit(1 if bad else 0)
+          PY
+
+  # 后端占位 job：仅当 backend 目录里出现 package.json / pyproject.toml / pom.xml 等时再启用真实构建
+  backend:
+    name: backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          if [ -z "$(ls -A backend 2>/dev/null | grep -v '^\.gitkeep$' || true)" ]; then
+            echo "backend empty, skipping build."
+            exit 0
+          fi
+          echo "backend has files; extend this job with real build/test."
+
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          if [ -z "$(ls -A frontend 2>/dev/null | grep -v '^\.gitkeep$' || true)" ]; then
+            echo "frontend empty, skipping build."
+            exit 0
+          fi
+          echo "frontend has files; extend this job with real build/test."
+
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          if [ -z "$(ls -A tests 2>/dev/null | grep -v '^\.gitkeep$' || true)" ]; then
+            echo "tests empty, skipping."
+            exit 0
+          fi
+          echo "tests has files; extend this job to run them."

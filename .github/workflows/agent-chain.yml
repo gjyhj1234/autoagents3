@@ -1,0 +1,119 @@
+name: Agent Chain
+
+# 当一个带 role:* 标签的 PR 被合并时，自动创建下一个角色的子任务，并指派给 Copilot
+# 需要在仓库 Secrets 中配置 AGENT_PAT（fine-grained PAT，权限：Issues RW, PRs RW, Contents RW）
+# 若未配置 AGENT_PAT，则回退用 GITHUB_TOKEN（此时无法把 Issue assign 给 Copilot，但仍会创建 Issue 留痕）
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  next:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve next role
+        id: role
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const order = [
+              'role:product',
+              'role:uiux',
+              'role:architect',
+              'role:backend',
+              'role:frontend',
+              'role:qa',
+            ];
+            const titles = {
+              'role:product':   '产出《患者管理模块产品需求文档》到 docs/requirements/',
+              'role:uiux':      '产出《患者管理模块 UI/UX 设计》到 docs/ui-design/',
+              'role:architect': '产出《患者管理模块架构与接口设计》到 docs/architecture/',
+              'role:backend':   '实现患者管理模块后端代码到 backend/',
+              'role:frontend':  '实现患者管理模块前端代码到 frontend/',
+              'role:qa':        '编写患者管理模块自动化测试到 tests/',
+            };
+            const inputs = {
+              'role:product':   '业务目标来自根任务',
+              'role:uiux':      'docs/requirements/*.md',
+              'role:architect': 'docs/requirements/*.md, docs/ui-design/*.md',
+              'role:backend':   'docs/architecture/*.md',
+              'role:frontend':  'docs/ui-design/*.md, docs/architecture/*.md',
+              'role:qa':        'backend/**, frontend/**',
+            };
+
+            const labels = context.payload.pull_request.labels.map(l => l.name);
+            const current = order.find(r => labels.includes(r));
+            if (!current) {
+              core.info('No role:* label on merged PR. Skipping.');
+              core.setOutput('next', '');
+              return;
+            }
+            const idx = order.indexOf(current);
+            if (idx === order.length - 1) {
+              core.info('Last role finished. No next task.');
+              core.setOutput('next', '');
+              return;
+            }
+            const next = order[idx + 1];
+            core.setOutput('next', next);
+            core.setOutput('title', `[SUB][${next}] ` + titles[next]);
+            core.setOutput('inputs', inputs[next]);
+            core.setOutput('prevPr', String(context.payload.pull_request.number));
+
+      - name: Create next sub-issue (with AGENT_PAT -> assign Copilot)
+        if: steps.role.outputs.next != '' && env.AGENT_PAT != ''
+        env:
+          AGENT_PAT: ${{ secrets.AGENT_PAT }}
+          GH_TOKEN: ${{ secrets.AGENT_PAT }}
+          NEXT: ${{ steps.role.outputs.next }}
+          TITLE: ${{ steps.role.outputs.title }}
+          INPUTS: ${{ steps.role.outputs.inputs }}
+          PREV_PR: ${{ steps.role.outputs.prevPr }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+          BODY=$(cat <<EOF
+          自动创建的子任务（由前置 PR #${PREV_PR} 合并后触发）。
+
+          角色：${NEXT}
+          输入：${INPUTS}
+
+          请严格按照仓库根任务 Issue 中的自动化规则执行：
+          - 在独立分支上以 Draft PR 开发
+          - 代码/文档提交完成后把 PR 改为 Ready for review
+          - 给 PR 打上 \`automerge\` 标签（若 auto-label workflow 已启用可忽略）
+          - CI 失败自动重试，最多 3 次
+          EOF
+          )
+          gh issue create \
+            --repo "$REPO" \
+            --title "$TITLE" \
+            --body "$BODY" \
+            --label "agent-task,agent-sub,$NEXT,status:in-progress" \
+            --assignee "Copilot"
+
+      - name: Fallback (no PAT) - create issue without Copilot assignment
+        if: steps.role.outputs.next != '' && env.AGENT_PAT == ''
+        env:
+          AGENT_PAT: ${{ secrets.AGENT_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEXT: ${{ steps.role.outputs.next }}
+          TITLE: ${{ steps.role.outputs.title }}
+          INPUTS: ${{ steps.role.outputs.inputs }}
+          PREV_PR: ${{ steps.role.outputs.prevPr }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "::warning::AGENT_PAT secret not set. Creating issue without Copilot assignee; please assign it manually once to continue the chain."
+          BODY=$(printf '自动创建的子任务（前置 PR #%s 已合并）。\n\n角色：%s\n输入：%s\n\n⚠️ 未配置 AGENT_PAT，无法自动指派给 Copilot，请手动 Assign Copilot 以继续。' "$PREV_PR" "$NEXT" "$INPUTS")
+          gh issue create \
+            --repo "$REPO" \
+            --title "$TITLE" \
+            --body "$BODY" \
+            --label "agent-task,agent-sub,$NEXT,status:in-progress"
