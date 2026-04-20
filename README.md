@@ -19,6 +19,7 @@
 │       ├── labels-sync.yml              # 同步 labels.yml 到仓库标签
 │       ├── pr-auto-label.yml            # 根据文件路径/分支名自动打 role:* 与 automerge 标签
 │       ├── auto-merge.yml               # 带 automerge 标签的非 Draft PR 自动启用 auto-merge
+│       ├── agent-bootstrap.yml          # root issue 一打开就自动创建首个 role:product 子 Issue
 │       └── agent-chain.yml              # 合并后自动创建下一角色的子 Issue 并 assign Copilot
 ├── docs/
 │   ├── requirements/                    # role:product 交付
@@ -40,7 +41,8 @@
 
 ### 2) 仓库 → Settings → Actions → General
 - **Actions permissions** = Allow all actions and reusable workflows
-- **Fork pull request workflows from outside collaborators** = `Require approval for first-time contributors who are new to GitHub`（或更宽松）
+- **Fork pull request workflows from outside collaborators** = **Do not require approval**  
+  ⚠️ 必须选这个，否则 Copilot 首次开 PR 会被卡在 `action required`，需要人手点 "Approve and run"，违反"零干预"目标。
 - **Workflow permissions** = **Read and write permissions**
 - 勾选 **Allow GitHub Actions to create and approve pull requests**
 - Save
@@ -59,7 +61,7 @@
 - Bypass list 加入 **Copilot** 和 `github-actions[bot]`
 - Save
 
-### 5) 创建 Fine-grained PAT（用于 agent-chain 接力时把子 Issue assign 给 Copilot）
+### 5) 创建 Fine-grained PAT（**必需** — 用于 bootstrap 与 agent-chain 把 sub Issue assign 给 Copilot）
 - 打开 <https://github.com/settings/personal-access-tokens/new>
 - Repository access → Only select repositories → `gjyhj1234/autoagents3`
 - Permissions：
@@ -72,7 +74,7 @@
   名字：`AGENT_PAT`  
   值：上面复制的 token
 
-> ⚠️ 不配 `AGENT_PAT` 也能用，但 agent-chain workflow 将无法把下一个子 Issue 自动 assign 给 Copilot；届时需要你手点一次 Assignees。
+> ⚠️ **没有 `AGENT_PAT` 整条链就停**：默认的 `GITHUB_TOKEN` 无法把 Issue assign 给 Copilot，agent-bootstrap 与 agent-chain 都会回退到"创建 Issue 但无 Assignee"，链路停留在第一步。这就是"添加 issue 后没有进行下一步操作"最常见的原因。
 
 ### 6) 触发第一个标签同步
 - Settings 里保存上面的全部开关后，在仓库 Actions 页面选 **Sync Labels** → `Run workflow`，让标签出现在仓库中。  
@@ -82,12 +84,15 @@
 
 1. 点 **Issues → New issue → 🤖 Agent 根任务 (Root Task)** 模板
 2. 填写模块名（例如"患者管理模块"）等字段 → Submit
-3. 确认右侧 **Assignees** 已是 **Copilot**（模板已默认）  
-4. 观察：
-   - Copilot 创建分支、Draft PR、提交代码、转 Ready for review
-   - CI 通过后带 `automerge` 标签的 PR 自动合并
-   - `agent-chain` workflow 自动创建下一个 `role:*` 子 Issue 并 assign 给 Copilot
-5. 所有 6 个角色依次完成后，根 Issue 自动被最后一个 PR 关联关闭。
+3. **不需要做任何事** — 后续完全自动：
+   - `agent-bootstrap` workflow 立刻创建首个 `role:product` 子 Issue 并 assign Copilot
+   - Copilot 在子 Issue 上自动开 Draft PR、提交代码、转 Ready for review
+   - `pr-auto-label` 自动打 `role:*` + `automerge` 标签
+   - CI 通过后 `auto-merge` 自动 squash-merge 并删分支
+   - `agent-chain` 监听到合并事件，自动创建下一个 `role:*` 子 Issue 并 assign Copilot
+   - 6 个角色依次完成，最后一个 PR 合并后 root Issue 被自动关闭
+
+> 整个过程的进度可以通过 root Issue 的 timeline 评论实时查看（每次链条推进都会留言）。
 
 ## 自动化规则（与根 Issue 模板一致）
 
@@ -99,13 +104,16 @@
 ## 常见问题
 
 **Q: `Approve and run` 还是弹出来？**  
-A: 检查 Settings → Actions → General 里 Fork PR 审批策略；确认 Workflow permissions 为 Read and write 且允许创建/审批 PR。
+A: 把 Settings → Actions → General 里的 "Fork pull request workflows from outside collaborators" 改为 **Do not require approval**；同时确认 Workflow permissions 为 Read and write 且允许创建/审批 PR。
 
 **Q: PR 没有自动合并？**  
 A: ① Repo 是否开了 Allow auto-merge；② 分支保护的 required checks 是否已有至少一次成功记录；③ PR 是否 Draft；④ PR 是否带 `automerge` 标签。
 
+**Q: 添加 root Issue 后没有任何后续动作 / 没有自动开子 Issue？**  
+A: 99% 是 `AGENT_PAT` secret 没配。请按上文第 5 步配置；也可以打开仓库 Actions → "Agent Bootstrap" workflow 的运行日志确认是否走了 fallback 分支。
+
 **Q: 下一个子 Issue 没有被 assign 给 Copilot？**  
-A: 说明 `AGENT_PAT` secret 未配置。按上文第 5 步创建并保存。
+A: 同上，说明 `AGENT_PAT` secret 未配置或权限不够。
 
 **Q: 我想加真实的 backend/frontend 构建？**  
 A: 直接在 `.github/workflows/ci.yml` 的对应 job 里追加 `npm ci && npm test` / `pytest` / `mvn verify` 等命令，不需要改其他文件。

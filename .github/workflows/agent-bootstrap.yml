@@ -1,0 +1,129 @@
+name: Agent Bootstrap
+
+# 当一个带 `agent-root` 标签的根 Issue 被创建/重新打开/编辑时，
+# 自动创建第一个角色（role:product）的子 Issue，并 assign 给 Copilot，
+# 让整个 6 角色串行链路从「零人工干预」开始。
+#
+# 链路其余环节由 .github/workflows/agent-chain.yml 在每个子 PR 合并后接力。
+#
+# 需要在仓库 Secrets 中配置 AGENT_PAT（fine-grained PAT，权限：Issues RW, PRs RW, Contents RW）
+# 才能把 sub-issue assign 给 Copilot；缺失时会回退到 GITHUB_TOKEN，并在 root issue 留言提示。
+
+on:
+  issues:
+    types: [opened, reopened, labeled, edited]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  bootstrap:
+    if: contains(github.event.issue.labels.*.name, 'agent-root')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip if first sub-issue already created
+        id: guard
+        uses: actions/github-script@v7
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          script: |
+            const marker = `<!-- agent-bootstrap:root#${context.payload.issue.number} -->`;
+            core.setOutput('marker', marker);
+
+            // List recent issues with role:product label to detect duplicate bootstrap
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'all',
+              labels: 'agent-sub,role:product',
+              per_page: 100,
+            });
+            const dup = existing.find(i => (i.body || '').includes(marker));
+            if (dup) {
+              core.info(`Bootstrap already done: sub-issue #${dup.number}`);
+              core.setOutput('skip', 'true');
+            } else {
+              core.setOutput('skip', 'false');
+            }
+
+      - name: Resolve module name from root issue
+        if: steps.guard.outputs.skip == 'false'
+        id: meta
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            // Try to read the "模块名称" field from the issue body (issue forms render as a labeled section)
+            const body = issue.body || '';
+            const m = body.match(/###\s*模块名称\s*\n+([^\n]+)/);
+            let module = (m && m[1].trim()) || '';
+            // Fallback: parse "[ROOT] xxx" title pattern
+            if (!module) {
+              const t = (issue.title || '').replace(/^\s*\[ROOT\]\s*/i, '').trim();
+              if (t) module = t;
+            }
+            if (!module) module = '业务模块';
+            core.setOutput('module', module);
+            core.setOutput('rootNumber', String(issue.number));
+
+      - name: Create first sub-issue (with AGENT_PAT -> assign Copilot)
+        if: steps.guard.outputs.skip == 'false' && env.AGENT_PAT != ''
+        env:
+          AGENT_PAT: ${{ secrets.AGENT_PAT }}
+          GH_TOKEN: ${{ secrets.AGENT_PAT }}
+          REPO: ${{ github.repository }}
+          MODULE: ${{ steps.meta.outputs.module }}
+          ROOT_NUMBER: ${{ steps.meta.outputs.rootNumber }}
+          MARKER: ${{ steps.guard.outputs.marker }}
+        run: |
+          set -e
+          TITLE="[SUB][role:product] 产出《${MODULE}产品需求文档》到 docs/requirements/"
+          BODY=$(cat <<EOF
+          ${MARKER}
+          自动创建的首个子任务（由 root issue #${ROOT_NUMBER} 触发，模块：**${MODULE}**）。
+
+          角色：role:product
+          输入：root issue #${ROOT_NUMBER} 的「业务目标」与「功能范围」字段
+          输出：\`docs/requirements/\` 下的产品需求文档（Markdown）
+
+          请严格按照 root issue 的自动化规则执行：
+          - 在独立分支上以 Draft PR 开发
+          - 提交完毕后把 PR 转为 Ready for review
+          - 给 PR 打上 \`automerge\` 与 \`role:product\` 标签（pr-auto-label workflow 会自动打）
+          - CI 全绿后会被 auto-merge，合并后 agent-chain workflow 会自动开 \`role:uiux\` 子任务
+          EOF
+          )
+          gh issue create \
+            --repo "$REPO" \
+            --title "$TITLE" \
+            --body "$BODY" \
+            --label "agent-task,agent-sub,role:product,status:in-progress" \
+            --assignee "Copilot"
+          gh issue comment "$ROOT_NUMBER" \
+            --repo "$REPO" \
+            --body "🤖 已自动创建首个子任务 \`role:product\`，链路启动。后续 5 个角色将在每次 PR 合并后由 \`agent-chain\` workflow 自动接力。"
+
+      - name: Fallback (no PAT) - create issue without Copilot assignment & warn on root
+        if: steps.guard.outputs.skip == 'false' && env.AGENT_PAT == ''
+        env:
+          AGENT_PAT: ${{ secrets.AGENT_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          MODULE: ${{ steps.meta.outputs.module }}
+          ROOT_NUMBER: ${{ steps.meta.outputs.rootNumber }}
+          MARKER: ${{ steps.guard.outputs.marker }}
+        run: |
+          set -e
+          echo "::warning::AGENT_PAT secret not set. Sub-issue will be created without Copilot assignee; the chain will halt until you assign manually."
+          TITLE="[SUB][role:product] 产出《${MODULE}产品需求文档》到 docs/requirements/"
+          BODY=$(printf '%s\n自动创建的首个子任务（root #%s，模块：**%s**）。\n\n⚠️ 仓库未配置 AGENT_PAT secret，无法把本 issue 自动 assign 给 Copilot。\n请到 Settings → Secrets and variables → Actions 添加 AGENT_PAT，或手动把 Assignees 设为 Copilot。' "$MARKER" "$ROOT_NUMBER" "$MODULE")
+          gh issue create \
+            --repo "$REPO" \
+            --title "$TITLE" \
+            --body "$BODY" \
+            --label "agent-task,agent-sub,role:product,status:in-progress"
+          gh issue comment "$ROOT_NUMBER" \
+            --repo "$REPO" \
+            --body "⚠️ 已创建首个子任务，但仓库未配置 \`AGENT_PAT\` secret，无法自动 assign Copilot。请配置 secret 或手动 assign 一次以启动链路。详见 README「一次性配置清单」第 5 步。"
