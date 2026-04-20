@@ -57,7 +57,7 @@ jobs:
             const issue = context.payload.issue;
             // Try to read the "模块名称" field from the issue body (issue forms render as a labeled section)
             const body = issue.body || '';
-            const m = body.match(/###\s*模块名称\s*\n+([^\n]+)/);
+            const m = body.match(/###\s*模块名称\s+([^\n]+)/);
             let module = (m && m[1].trim()) || '';
             // Fallback: parse "[ROOT] xxx" title pattern
             if (!module) {

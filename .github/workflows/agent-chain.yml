@@ -60,7 +60,7 @@ jobs:
             // Try to discover the root issue number from PR body / linked issues
             let rootNumber = '';
             const body = context.payload.pull_request.body || '';
-            const refMatch = body.match(/root[^#]*#(\d+)/i) || body.match(/#(\d+)/);
+            const refMatch = body.match(/root[^#]*#(\d+)/i);
             if (refMatch) rootNumber = refMatch[1];
             if (!rootNumber) {
               const { data: roots } = await github.rest.issues.listForRepo({
