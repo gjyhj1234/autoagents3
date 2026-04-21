@@ -1,0 +1,37 @@
+name: Agent Chain Healthcheck
+
+# 定时/手动兜底：扫描所有 open 的 `agent-sub` issue，若已存在超过 30 分钟但
+# assignees 里还没有 copilot-swe-agent，则尝试重新指派 Copilot；连续失败 3 次后
+# 在关联的 root issue 留言告警，避免链路静默死亡。
+#
+# 失败计数通过在 issue body 里嵌入不可见标记 `<!-- healthcheck-retries:N -->`
+# 来实现，无需外部存储。
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for scripts)
+        uses: actions/checkout@v4
+
+      - name: Scan stuck sub-issues & retry assign
+        id: scan
+        env:
+          AGENT_PAT: ${{ secrets.AGENT_PAT }}
+          GH_TOKEN: ${{ secrets.AGENT_PAT != '' && secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          if [ -z "${AGENT_PAT:-}" ]; then
+            echo "::warning::AGENT_PAT 未配置，healthcheck 无法完成 GraphQL 指派，只能观测；请先配置 secret。"
+          fi
+          node .github/scripts/healthcheck-chain.mjs
