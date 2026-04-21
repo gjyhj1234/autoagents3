@@ -1,17 +1,28 @@
 name: Agent Bootstrap
 
-# 当一个带 `agent-root` 标签的根 Issue 被创建/重新打开/编辑时，
-# 自动创建第一个角色（role:product）的子 Issue，并 assign 给 Copilot，
-# 让整个 6 角色串行链路从「零人工干预」开始。
+# 当一个带 `agent-root` 标签的根 Issue 被创建/重新打开/编辑/重新打标签时，
+# 自动创建第一个角色（role:product）的子 Issue，并通过 GraphQL 把 Copilot coding agent
+# 指派为 Assignee，让整个 6 角色串行链路从「零人工干预」开始。
 #
 # 链路其余环节由 .github/workflows/agent-chain.yml 在每个子 PR 合并后接力。
 #
-# 需要在仓库 Secrets 中配置 AGENT_PAT（fine-grained PAT，权限：Issues RW, PRs RW, Contents RW）
-# 才能把 sub-issue assign 给 Copilot；缺失时会回退到 GITHUB_TOKEN，并在 root issue 留言提示。
+# 需要在仓库 Secrets 中配置 AGENT_PAT（fine-grained PAT，权限：
+#   Issues RW, Pull requests RW, Contents RW, Workflows RW, Metadata R）
+# 才能通过 GraphQL 把 sub-issue assign 给 Copilot；缺失时会在 root issue 留言提示。
+#
+# 关键点：不再使用 `gh issue create --assignee Copilot`（Copilot 是 Bot，REST
+# assignees 会静默丢弃该值），改用 .github/scripts/assign-copilot.mjs 走
+# GraphQL suggestedActors + replaceActorsForAssignable，并在成功后自检 assignees。
 
 on:
   issues:
     types: [opened, reopened, labeled, edited]
+  workflow_dispatch:
+    inputs:
+      root_issue_number:
+        description: '手动重放用：已存在的 root issue 号（带 agent-root 标签）'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -19,20 +30,54 @@ permissions:
 
 jobs:
   bootstrap:
-    if: contains(github.event.issue.labels.*.name, 'agent-root')
+    # issues 事件：必须带 agent-root 标签；workflow_dispatch：总是允许
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.issue.labels.*.name, 'agent-root')
     runs-on: ubuntu-latest
     steps:
-      - name: Skip if first sub-issue already created
+      - name: Checkout (for scripts)
+        uses: actions/checkout@v4
+
+      - name: Resolve root issue (supports workflow_dispatch replay)
+        id: root
+        uses: actions/github-script@v7
+        env:
+          INPUT_ROOT: ${{ inputs.root_issue_number }}
+        with:
+          script: |
+            let issue;
+            if (context.eventName === 'workflow_dispatch') {
+              const n = parseInt(process.env.INPUT_ROOT, 10);
+              if (!n) { core.setFailed('root_issue_number input required'); return; }
+              const { data } = await github.rest.issues.get({
+                owner: context.repo.owner, repo: context.repo.repo, issue_number: n,
+              });
+              issue = data;
+              const hasRoot = (data.labels || []).some(l => (l.name || l) === 'agent-root');
+              if (!hasRoot) {
+                core.setFailed(`Issue #${n} does not have the 'agent-root' label.`);
+                return;
+              }
+            } else {
+              issue = context.payload.issue;
+            }
+
+            core.setOutput('number', String(issue.number));
+            core.setOutput('title', issue.title || '');
+            core.setOutput('body', issue.body || '');
+
+      - name: Guard (skip if first sub-issue already created)
         id: guard
         uses: actions/github-script@v7
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ROOT_NUMBER: ${{ steps.root.outputs.number }}
         with:
           script: |
-            const marker = `<!-- agent-bootstrap:root#${context.payload.issue.number} -->`;
+            const rootNumber = process.env.ROOT_NUMBER;
+            const marker = `<!-- agent-bootstrap:root#${rootNumber} -->`;
             core.setOutput('marker', marker);
 
-            // List recent issues with role:product label to detect duplicate bootstrap
             const { data: existing } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -52,33 +97,35 @@ jobs:
         if: steps.guard.outputs.skip == 'false'
         id: meta
         uses: actions/github-script@v7
+        env:
+          ROOT_TITLE: ${{ steps.root.outputs.title }}
+          ROOT_BODY: ${{ steps.root.outputs.body }}
         with:
           script: |
-            const issue = context.payload.issue;
-            // Try to read the "模块名称" field from the issue body (issue forms render as a labeled section)
-            const body = issue.body || '';
+            const body = process.env.ROOT_BODY || '';
             const m = body.match(/###\s*模块名称\s+([^\n]+)/);
-            let module = (m && m[1].trim()) || '';
-            // Fallback: parse "[ROOT] xxx" title pattern
-            if (!module) {
-              const t = (issue.title || '').replace(/^\s*\[ROOT\]\s*/i, '').trim();
-              if (t) module = t;
+            let mod = (m && m[1].trim()) || '';
+            if (!mod) {
+              const t = (process.env.ROOT_TITLE || '').replace(/^\s*\[ROOT\]\s*/i, '').trim();
+              if (t) mod = t;
             }
-            if (!module) module = '业务模块';
-            core.setOutput('module', module);
-            core.setOutput('rootNumber', String(issue.number));
+            if (!mod) mod = '业务模块';
+            core.setOutput('module', mod);
 
-      - name: Create first sub-issue (with AGENT_PAT -> assign Copilot)
+      - name: Create first sub-issue & assign Copilot via GraphQL
         if: steps.guard.outputs.skip == 'false' && env.AGENT_PAT != ''
+        id: create
         env:
           AGENT_PAT: ${{ secrets.AGENT_PAT }}
           GH_TOKEN: ${{ secrets.AGENT_PAT }}
           REPO: ${{ github.repository }}
           MODULE: ${{ steps.meta.outputs.module }}
-          ROOT_NUMBER: ${{ steps.meta.outputs.rootNumber }}
+          ROOT_NUMBER: ${{ steps.root.outputs.number }}
           MARKER: ${{ steps.guard.outputs.marker }}
+          ROOT_ISSUE_NUMBER: ${{ steps.root.outputs.number }}
+          ROOT_COMMENT_PREFIX: '[agent-bootstrap]'
         run: |
-          set -e
+          set -eu
           TITLE="[SUB][role:product] 产出《${MODULE}产品需求文档》到 docs/requirements/"
           BODY=$(cat <<EOF
           ${MARKER}
@@ -95,30 +142,36 @@ jobs:
           - CI 全绿后会被 auto-merge，合并后 agent-chain workflow 会自动开 \`role:uiux\` 子任务
           EOF
           )
-          gh issue create \
-            --repo "$REPO" \
-            --title "$TITLE" \
-            --body "$BODY" \
-            --label "agent-task,agent-sub,role:product,status:in-progress" \
-            --assignee "Copilot"
+          export ISSUE_TITLE="$TITLE"
+          export ISSUE_BODY="$BODY"
+          export ISSUE_LABELS="agent-task,agent-sub,role:product,status:in-progress"
+          node .github/scripts/assign-copilot.mjs
+
+      - name: Comment on root issue (chain started)
+        if: steps.guard.outputs.skip == 'false' && env.AGENT_PAT != '' && success()
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_PAT }}
+          REPO: ${{ github.repository }}
+          ROOT_NUMBER: ${{ steps.root.outputs.number }}
+        run: |
           gh issue comment "$ROOT_NUMBER" \
             --repo "$REPO" \
-            --body "🤖 已自动创建首个子任务 \`role:product\`，链路启动。后续 5 个角色将在每次 PR 合并后由 \`agent-chain\` workflow 自动接力。"
+            --body "🤖 已自动创建首个子任务 \`role:product\` 并将 Copilot 指派为 Assignee，链路启动。后续 5 个角色将在每次 PR 合并后由 \`agent-chain\` workflow 自动接力。"
 
-      - name: Fallback (no PAT) - create issue without Copilot assignment & warn on root
+      - name: Fallback (no PAT) - create issue without Copilot assignment & warn
         if: steps.guard.outputs.skip == 'false' && env.AGENT_PAT == ''
         env:
           AGENT_PAT: ${{ secrets.AGENT_PAT }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           MODULE: ${{ steps.meta.outputs.module }}
-          ROOT_NUMBER: ${{ steps.meta.outputs.rootNumber }}
+          ROOT_NUMBER: ${{ steps.root.outputs.number }}
           MARKER: ${{ steps.guard.outputs.marker }}
         run: |
-          set -e
-          echo "::warning::AGENT_PAT secret not set. Sub-issue will be created without Copilot assignee; the chain will halt until you assign manually."
+          set -eu
+          echo "::warning::AGENT_PAT secret 未配置，无法完成 GraphQL 指派；将仅创建不带 assignee 的 issue。"
           TITLE="[SUB][role:product] 产出《${MODULE}产品需求文档》到 docs/requirements/"
-          BODY=$(printf '%s\n自动创建的首个子任务（root #%s，模块：**%s**）。\n\n⚠️ 仓库未配置 AGENT_PAT secret，无法把本 issue 自动 assign 给 Copilot。\n请到 Settings → Secrets and variables → Actions 添加 AGENT_PAT，或手动把 Assignees 设为 Copilot。' "$MARKER" "$ROOT_NUMBER" "$MODULE")
+          BODY=$(printf '%s\n自动创建的首个子任务（root #%s，模块：**%s**）。\n\n⚠️ 仓库未配置 AGENT_PAT secret，无法完成 GraphQL 指派（REST `assignees=Copilot` 会被 GitHub 静默丢弃）。\n请到 Settings → Secrets and variables → Actions 添加 AGENT_PAT，然后在 Actions 里重放本 workflow（workflow_dispatch 传入该 root issue 号）。' "$MARKER" "$ROOT_NUMBER" "$MODULE")
           gh issue create \
             --repo "$REPO" \
             --title "$TITLE" \
@@ -126,4 +179,4 @@ jobs:
             --label "agent-task,agent-sub,role:product,status:in-progress"
           gh issue comment "$ROOT_NUMBER" \
             --repo "$REPO" \
-            --body "⚠️ 已创建首个子任务，但仓库未配置 \`AGENT_PAT\` secret，无法自动 assign Copilot。请配置 secret 或手动 assign 一次以启动链路。详见 README「一次性配置清单」第 5 步。"
+            --body "⚠️ 已创建首个子任务，但仓库未配置 \`AGENT_PAT\` secret，**无法完成 GraphQL 指派**。请按 README「一次性配置清单」第 5 步配置 secret，然后在 Actions 里手动重放 \`Agent Bootstrap\` workflow（传入本 root issue 号）。"

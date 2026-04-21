@@ -1,8 +1,17 @@
 name: Agent Chain
 
-# 当一个带 role:* 标签的 PR 被合并时，自动创建下一个角色的子任务，并指派给 Copilot
-# 需要在仓库 Secrets 中配置 AGENT_PAT（fine-grained PAT，权限：Issues RW, PRs RW, Contents RW）
-# 若未配置 AGENT_PAT，则回退用 GITHUB_TOKEN（此时无法把 Issue assign 给 Copilot，但仍会创建 Issue 留痕）
+# 当一个带 role:* 标签的 PR 被合并时，自动创建下一个角色的子任务，并通过 GraphQL
+# 把 Copilot coding agent 指派为 Assignee。模块名称会从 open 的 root issue 正文
+# 「### 模块名称」字段动态读取（若读取失败则回退为「业务模块」）。
+#
+# 与历史版本的差别：
+#   - 不再硬编码 "患者管理模块"；
+#   - 不再使用 `gh issue create --assignee Copilot`（Copilot 是 Bot，会被静默丢弃），
+#     改用 .github/scripts/assign-copilot.mjs 走 GraphQL + 自检。
+#
+# 需要在仓库 Secrets 中配置 AGENT_PAT（fine-grained PAT，权限：
+#   Issues RW, Pull requests RW, Contents RW, Workflows RW, Metadata R）。
+# 若未配置 AGENT_PAT 会在 root issue 留言告警并仅创建不带 assignee 的 issue。
 
 on:
   pull_request:
@@ -18,10 +27,16 @@ jobs:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
-      - name: Resolve next role
+      - name: Checkout (for scripts)
+        uses: actions/checkout@v4
+
+      - name: Resolve next role & module
         id: role
         uses: actions/github-script@v7
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_PAT != '' && secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
         with:
+          github-token: ${{ secrets.AGENT_PAT != '' && secrets.AGENT_PAT || secrets.GITHUB_TOKEN }}
           script: |
             const order = [
               'role:product',
@@ -31,13 +46,14 @@ jobs:
               'role:frontend',
               'role:qa',
             ];
-            const titles = {
-              'role:product':   '产出《患者管理模块产品需求文档》到 docs/requirements/',
-              'role:uiux':      '产出《患者管理模块 UI/UX 设计》到 docs/ui-design/',
-              'role:architect': '产出《患者管理模块架构与接口设计》到 docs/architecture/',
-              'role:backend':   '实现患者管理模块后端代码到 backend/',
-              'role:frontend':  '实现患者管理模块前端代码到 frontend/',
-              'role:qa':        '编写患者管理模块自动化测试到 tests/',
+            // 标题/输入的模板，${module} 会被实际模块名替换
+            const titleTpls = {
+              'role:product':   '产出《${module}产品需求文档》到 docs/requirements/',
+              'role:uiux':      '产出《${module} UI/UX 设计》到 docs/ui-design/',
+              'role:architect': '产出《${module}架构与接口设计》到 docs/architecture/',
+              'role:backend':   '实现${module}后端代码到 backend/',
+              'role:frontend':  '实现${module}前端代码到 frontend/',
+              'role:qa':        '编写${module}自动化测试到 tests/',
             };
             const inputs = {
               'role:product':   '业务目标来自根任务',
@@ -56,8 +72,9 @@ jobs:
               return;
             }
             const idx = order.indexOf(current);
+            core.setOutput('current', current);
 
-            // Try to discover the root issue number from PR body / linked issues
+            // Discover root issue number: PR body "root #N" or fallback to open agent-root
             let rootNumber = '';
             const body = context.payload.pull_request.body || '';
             const refMatch = body.match(/root[^#]*#(\d+)/i);
@@ -73,7 +90,30 @@ jobs:
               if (roots.length) rootNumber = String(roots[0].number);
             }
             core.setOutput('rootNumber', rootNumber);
-            core.setOutput('current', current);
+
+            // Resolve module from root issue body (same regex as agent-bootstrap)
+            let mod = '';
+            if (rootNumber) {
+              try {
+                const { data: root } = await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: parseInt(rootNumber, 10),
+                });
+                const m = (root.body || '').match(/###\s*模块名称\s+([^\n]+)/);
+                if (m) mod = m[1].trim();
+                if (!mod) {
+                  const t = (root.title || '').replace(/^\s*\[ROOT\]\s*/i, '').trim();
+                  if (t) mod = t;
+                }
+              } catch (e) {
+                core.warning(`Failed to load root issue #${rootNumber}: ${e.message}`);
+              }
+            }
+            if (!mod) mod = '业务模块';
+            core.setOutput('module', mod);
+
+            core.setOutput('prevPr', String(context.payload.pull_request.number));
 
             if (idx === order.length - 1) {
               core.info('Last role finished. No next task.');
@@ -82,26 +122,28 @@ jobs:
               return;
             }
             const next = order[idx + 1];
+            const title = `[SUB][${next}] ` + titleTpls[next].replace(/\$\{module\}/g, mod);
             core.setOutput('next', next);
-            core.setOutput('title', `[SUB][${next}] ` + titles[next]);
+            core.setOutput('title', title);
             core.setOutput('inputs', inputs[next]);
-            core.setOutput('prevPr', String(context.payload.pull_request.number));
 
-      - name: Create next sub-issue (with AGENT_PAT -> assign Copilot)
+      - name: Create next sub-issue & assign Copilot via GraphQL
         if: steps.role.outputs.next != '' && env.AGENT_PAT != ''
         env:
           AGENT_PAT: ${{ secrets.AGENT_PAT }}
           GH_TOKEN: ${{ secrets.AGENT_PAT }}
+          REPO: ${{ github.repository }}
           NEXT: ${{ steps.role.outputs.next }}
           TITLE: ${{ steps.role.outputs.title }}
           INPUTS: ${{ steps.role.outputs.inputs }}
           PREV_PR: ${{ steps.role.outputs.prevPr }}
           ROOT_NUMBER: ${{ steps.role.outputs.rootNumber }}
-          REPO: ${{ github.repository }}
+          ROOT_ISSUE_NUMBER: ${{ steps.role.outputs.rootNumber }}
+          ROOT_COMMENT_PREFIX: '[agent-chain]'
         run: |
-          set -e
+          set -eu
           ROOT_REF=""
-          if [ -n "$ROOT_NUMBER" ]; then
+          if [ -n "${ROOT_NUMBER:-}" ]; then
             ROOT_REF="关联 root：#${ROOT_NUMBER}"
           fi
           BODY=$(cat <<EOF
@@ -118,17 +160,24 @@ jobs:
           - CI 失败自动重试，最多 3 次
           EOF
           )
-          gh issue create \
+          export ISSUE_TITLE="$TITLE"
+          export ISSUE_BODY="$BODY"
+          export ISSUE_LABELS="agent-task,agent-sub,${NEXT},status:in-progress"
+          node .github/scripts/assign-copilot.mjs
+
+      - name: Comment on root issue (chain advanced)
+        if: steps.role.outputs.next != '' && env.AGENT_PAT != '' && steps.role.outputs.rootNumber != '' && success()
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_PAT }}
+          REPO: ${{ github.repository }}
+          ROOT_NUMBER: ${{ steps.role.outputs.rootNumber }}
+          CURRENT: ${{ steps.role.outputs.current }}
+          NEXT: ${{ steps.role.outputs.next }}
+          PREV_PR: ${{ steps.role.outputs.prevPr }}
+        run: |
+          gh issue comment "$ROOT_NUMBER" \
             --repo "$REPO" \
-            --title "$TITLE" \
-            --body "$BODY" \
-            --label "agent-task,agent-sub,$NEXT,status:in-progress" \
-            --assignee "Copilot"
-          if [ -n "$ROOT_NUMBER" ]; then
-            gh issue comment "$ROOT_NUMBER" \
-              --repo "$REPO" \
-              --body "✅ \`${{ steps.role.outputs.current }}\` 已合并（PR #${PREV_PR}），已自动开下一个角色 \`${NEXT}\` 的子任务。"
-          fi
+            --body "✅ \`${CURRENT}\` 已合并（PR #${PREV_PR}），已自动开下一个角色 \`${NEXT}\` 的子任务并指派 Copilot。"
 
       - name: Fallback (no PAT) - create issue without Copilot assignment
         if: steps.role.outputs.next != '' && env.AGENT_PAT == ''
@@ -141,8 +190,8 @@ jobs:
           PREV_PR: ${{ steps.role.outputs.prevPr }}
           REPO: ${{ github.repository }}
         run: |
-          echo "::warning::AGENT_PAT secret not set. Creating issue without Copilot assignee; please assign it manually once to continue the chain."
-          BODY=$(printf '自动创建的子任务（前置 PR #%s 已合并）。\n\n角色：%s\n输入：%s\n\n⚠️ 未配置 AGENT_PAT，无法自动指派给 Copilot，请手动 Assign Copilot 以继续。' "$PREV_PR" "$NEXT" "$INPUTS")
+          echo "::warning::AGENT_PAT 未配置，无法完成 GraphQL 指派；仅创建 issue。"
+          BODY=$(printf '自动创建的子任务（前置 PR #%s 已合并）。\n\n角色：%s\n输入：%s\n\n⚠️ 未配置 AGENT_PAT，无法完成 GraphQL 指派。请配置 secret 后在 Actions 里触发 `Agent Chain Healthcheck` workflow 进行重试。' "$PREV_PR" "$NEXT" "$INPUTS")
           gh issue create \
             --repo "$REPO" \
             --title "$TITLE" \
@@ -157,7 +206,7 @@ jobs:
           ROOT_NUMBER: ${{ steps.role.outputs.rootNumber }}
           PREV_PR: ${{ github.event.pull_request.number }}
         run: |
-          set -e
+          set -eu
           gh issue comment "$ROOT_NUMBER" \
             --repo "$REPO" \
             --body "🎉 全部 6 个角色已交付（最后 PR #${PREV_PR} 已合并），自动关闭本 root 任务。"
