@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>患者管理系统</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- 页头 -->
+    <header class="header">
+      <h1>患者管理系统</h1>
+    </header>
+
+    <!-- 患者列表视图 -->
+    <div id="view-list" class="view">
+      <div class="toolbar">
+        <span class="toolbar-title">患者列表</span>
+        <button id="btn-new" class="btn btn-primary">+ 新增患者</button>
+      </div>
+
+      <!-- 筛选栏 -->
+      <div class="filter-bar">
+        <label>姓名
+          <input type="text" id="filter-name" placeholder="姓名搜索" />
+        </label>
+        <label>性别
+          <select id="filter-gender">
+            <option value="">全部</option>
+            <option value="男">男</option>
+            <option value="女">女</option>
+            <option value="其他">其他</option>
+          </select>
+        </label>
+        <label>电话
+          <input type="text" id="filter-phone" placeholder="手机号" />
+        </label>
+        <button id="btn-search" class="btn btn-default">搜索</button>
+        <button id="btn-reset" class="btn btn-default">重置</button>
+      </div>
+
+      <!-- 数据表格 -->
+      <div class="table-wrapper">
+        <table id="patient-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>姓名</th>
+              <th>性别</th>
+              <th>出生日期</th>
+              <th>联系电话</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="patient-tbody">
+            <tr id="empty-row">
+              <td colspan="6" class="empty-cell">暂无患者信息，点击右上角新增</td>
+            </tr>
+          </tbody>
+        </table>
+        <div id="loading" class="loading hidden">加载中…</div>
+      </div>
+
+      <!-- 分页 -->
+      <div class="pagination" id="pagination"></div>
+    </div>
+
+    <!-- 新增 / 编辑视图 -->
+    <div id="view-form" class="view hidden">
+      <div class="card">
+        <h2 id="form-title">新增患者</h2>
+        <form id="patient-form" novalidate>
+          <input type="hidden" id="field-id" />
+          <div class="form-row">
+            <label class="required">姓名</label>
+            <input type="text" id="field-name" required />
+            <span class="field-error" id="err-name"></span>
+          </div>
+          <div class="form-row">
+            <label class="required">性别</label>
+            <div class="radio-group">
+              <label><input type="radio" name="gender" value="男" required /> 男</label>
+              <label><input type="radio" name="gender" value="女" /> 女</label>
+              <label><input type="radio" name="gender" value="其他" /> 其他</label>
+            </div>
+            <span class="field-error" id="err-gender"></span>
+          </div>
+          <div class="form-row">
+            <label class="required">出生日期</label>
+            <input type="date" id="field-birth-date" required />
+            <span class="field-error" id="err-birth-date"></span>
+          </div>
+          <div class="form-row">
+            <label class="required">联系电话</label>
+            <input type="text" id="field-phone" maxlength="11" required />
+            <span class="field-error" id="err-phone"></span>
+          </div>
+          <div class="form-row">
+            <label>身份证号</label>
+            <input type="text" id="field-id-card" maxlength="18" />
+            <span class="field-error" id="err-id-card"></span>
+          </div>
+          <div class="form-row">
+            <label>地址</label>
+            <input type="text" id="field-address" />
+          </div>
+          <div class="form-row">
+            <label>过敏史</label>
+            <input type="text" id="field-allergy" />
+          </div>
+          <div class="form-row">
+            <label>备注</label>
+            <input type="text" id="field-remark" />
+          </div>
+          <div class="form-actions">
+            <button type="button" id="btn-cancel-form" class="btn btn-default">取消</button>
+            <button type="submit" id="btn-submit" class="btn btn-primary">保存</button>
+          </div>
+          <div id="form-error" class="form-error hidden"></div>
+        </form>
+      </div>
+    </div>
+
+    <!-- 详情视图 -->
+    <div id="view-detail" class="view hidden">
+      <div class="card">
+        <div class="detail-toolbar">
+          <h2>患者详情</h2>
+          <div>
+            <button id="btn-edit-detail" class="btn btn-primary">编辑</button>
+            <button id="btn-back-detail" class="btn btn-default">返回</button>
+          </div>
+        </div>
+        <table class="detail-table">
+          <tbody id="detail-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- 删除确认弹窗 -->
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div class="modal">
+      <h3>确认删除</h3>
+      <p id="modal-message">确认删除该患者？此操作不可恢复。</p>
+      <div class="modal-actions">
+        <button id="btn-modal-cancel" class="btn btn-default">取消</button>
+        <button id="btn-modal-confirm" class="btn btn-danger">确认删除</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
